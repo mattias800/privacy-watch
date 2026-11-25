@@ -5,10 +5,20 @@ if CommandLine.arguments.contains("--status") {
     let s = PrivacySnapshot.capture()
     print("Keyboard listeners:")
     for l in s.keyboardListeners.sorted(by: { $0.name < $1.name }) {
-        print("  \(l.name)  [\(l.canModify ? "can modify" : "listen-only")\(l.targetsSingleProcess ? ", single app" : "")]  \(l.path)")
+        print("  \(l.name)  [\(l.signer.notificationTag); \(l.canModify ? "can modify" : "listen-only")\(l.targetsSingleProcess ? ", single app" : "")]")
+        print("      \(l.signer.detail)")
+        print("      \(l.path)")
     }
     print("Screen recording: \(s.screen)")
-    print("Microphone: \(s.microphone.inUse ? "in use by \(s.microphone.apps.sorted().joined(separator: ", "))\(s.microphone.unattributedUse ? "unknown app" : "")" : "not in use")")
+    if s.microphone.inUse {
+        print("Microphone: in use")
+        for app in s.microphone.apps.sorted(by: { $0.name < $1.name }) {
+            print("  \(app.name)  [\(app.signer.notificationTag)]")
+        }
+        if s.microphone.unattributedUse { print("  (app unknown)") }
+    } else {
+        print("Microphone: not in use")
+    }
     exit(0)
 }
 

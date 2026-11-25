@@ -75,20 +75,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Keyboard
         menu.addItem(header("Keyboard listeners"))
+        // Third-party and unverified processes first, Apple's last.
         let listeners = current.keyboardListeners.sorted {
-            ($0.isAppleSystem ? 1 : 0, $0.name) < ($1.isAppleSystem ? 1 : 0, $1.name)
+            (Self.sortRank($0.signer.kind), $0.name) < (Self.sortRank($1.signer.kind), $1.name)
         }
         if listeners.isEmpty {
             menu.addItem(info("None"))
         }
         for listener in listeners {
-            var details: [String] = []
-            if listener.isAppleSystem { details.append("macOS") }
-            details.append(listener.canModify ? "can modify input" : "listen-only")
+            var details = [listener.canModify ? "can modify input" : "listen-only"]
             if listener.targetsSingleProcess { details.append("single app") }
-            let item = info("\(listener.name)  (\(details.joined(separator: ", ")))")
-            item.toolTip = listener.path
-            menu.addItem(item)
+            // Without a verified signer, the location is the best clue to what it is.
+            if listener.signer.kind != .apple && listener.signer.kind != .thirdParty {
+                details.append("in " + Self.abbreviatedDirectory(listener.path))
+            }
+            menu.addItem(processItem(
+                name: listener.name,
+                signer: listener.signer,
+                details: details,
+                path: listener.path
+            ))
         }
 
         // Screen
@@ -106,8 +112,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if current.microphone.apps.isEmpty && !current.microphone.unattributedUse {
             menu.addItem(info("Not in use"))
         }
-        for app in current.microphone.apps.sorted() {
-            menu.addItem(info("● \(app)"))
+        for app in current.microphone.apps.sorted(by: { $0.name < $1.name }) {
+            menu.addItem(processItem(name: app.name, signer: app.signer, details: [], path: nil))
         }
         if current.microphone.unattributedUse {
             menu.addItem(info("● In use (app unknown)"))
@@ -147,6 +153,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.target = self
         item.indentationLevel = 1
         return item
+    }
+
+    /// "LinearMouse — Jiahao Lu · can modify input" with a badge showing who signed it.
+    private func processItem(name: String, signer: CodeSigner, details: [String], path: String?) -> NSMenuItem {
+        var title = "\(name)  —  \(signer.label)"
+        if !details.isEmpty { title += "  ·  " + details.joined(separator: ", ") }
+        let item = info(title)
+        item.image = Self.badge(for: signer.kind)
+        item.toolTip = [signer.detail, path].compactMap { $0 }.joined(separator: "\n")
+        return item
+    }
+
+    /// "/Library/Application Support/PaloAltoNetworks/Traps/bin/pmd" -> "/Library/Application Support/PaloAltoNetworks/…"
+    private static func abbreviatedDirectory(_ path: String) -> String {
+        let directory = (path as NSString).deletingLastPathComponent
+        let components = (directory as NSString).abbreviatingWithTildeInPath.split(separator: "/", omittingEmptySubsequences: false)
+        guard components.count > 4 else { return (directory as NSString).abbreviatingWithTildeInPath }
+        return components.prefix(4).joined(separator: "/") + "/…"
+    }
+
+    private static func sortRank(_ kind: CodeSigner.Kind) -> Int {
+        switch kind {
+        case .invalid: return 0
+        case .unsigned: return 1
+        case .blocked: return 2
+        case .unknown: return 3
+        case .thirdParty: return 4
+        case .apple: return 5
+        }
+    }
+
+    private static func badge(for kind: CodeSigner.Kind) -> NSImage? {
+        let symbol: String
+        let color: NSColor
+        switch kind {
+        case .apple: symbol = "apple.logo"; color = .secondaryLabelColor
+        case .thirdParty: symbol = "checkmark.seal.fill"; color = .systemBlue
+        case .unsigned: symbol = "exclamationmark.triangle.fill"; color = .systemOrange
+        case .invalid: symbol = "xmark.octagon.fill"; color = .systemRed
+        case .blocked: symbol = "lock.fill"; color = .systemPurple
+        case .unknown: symbol = "questionmark.circle"; color = .secondaryLabelColor
+        }
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            ?? NSImage(systemSymbolName: "circle.fill", accessibilityDescription: nil)
+        return image?.withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [color]))
     }
 
     @objc private func noop() {}

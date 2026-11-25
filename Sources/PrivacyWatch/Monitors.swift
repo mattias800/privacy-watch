@@ -34,14 +34,11 @@ func displayName(pid: pid_t, path: String?) -> String {
 struct KeyboardListener: Hashable {
     let path: String
     let name: String
+    let signer: CodeSigner
     /// false = listen-only tap; true = active tap that can also modify or drop events.
     let canModify: Bool
     /// true when the tap only watches a single target process rather than the whole session.
     let targetsSingleProcess: Bool
-
-    var isAppleSystem: Bool {
-        path.hasPrefix("/System/") || path.hasPrefix("/usr/")
-    }
 }
 
 /// Lists every enabled event tap that receives key events. All event taps are
@@ -66,6 +63,7 @@ enum KeyboardTapMonitor {
             result.insert(KeyboardListener(
                 path: path,
                 name: displayName(pid: pid, path: path),
+                signer: CodeSignatureInspector.signer(pid: pid, path: path),
                 canModify: tap.options != .listenOnly,
                 targetsSingleProcess: tap.processBeingTapped != 0
             ))
@@ -112,9 +110,15 @@ enum ScreenRecordingMonitor {
 
 // MARK: - Microphone
 
+/// An app capturing audio input. Helper processes of the same app collapse into one entry.
+struct AudioClient: Hashable {
+    let name: String
+    let signer: CodeSigner
+}
+
 struct MicrophoneState: Equatable {
-    /// Names of apps whose processes are currently capturing audio input.
-    var apps: Set<String>
+    /// Apps whose processes are currently capturing audio input.
+    var apps: Set<AudioClient>
     /// The default input device is running, but no specific process could be identified.
     var unattributedUse: Bool
 
@@ -127,12 +131,15 @@ enum MicrophoneMonitor {
     private static let system = AudioObjectID(kAudioObjectSystemObject)
 
     static func snapshot() -> MicrophoneState {
-        var apps = Set<String>()
+        var apps = Set<AudioClient>()
         for process in processObjects() where isRunningInput(process) {
             let pid = processPID(process)
             if pid == getpid() { continue }
             let path = pid > 0 ? executablePath(for: pid) : nil
-            apps.insert(displayName(pid: pid, path: path))
+            apps.insert(AudioClient(
+                name: displayName(pid: pid, path: path),
+                signer: CodeSignatureInspector.signer(pid: pid, path: path)
+            ))
         }
         let deviceRunning = defaultInputDeviceIsRunning()
         return MicrophoneState(apps: apps, unattributedUse: apps.isEmpty && deviceRunning)
@@ -204,10 +211,12 @@ struct PrivacySnapshot: Equatable {
         var changes: [String] = []
 
         for listener in keyboardListeners.subtracting(old.keyboardListeners).sorted(by: { $0.name < $1.name }) {
-            changes.append("⌨️ \(listener.name) started listening to the keyboard")
+            let verified = listener.signer.kind == .apple || listener.signer.kind == .thirdParty
+            let location = verified ? "" : " [\(listener.path)]"
+            changes.append("⌨️ \(listener.name) (\(listener.signer.notificationTag)) started listening to the keyboard\(location)")
         }
         for listener in old.keyboardListeners.subtracting(keyboardListeners).sorted(by: { $0.name < $1.name }) {
-            changes.append("⌨️ \(listener.name) stopped listening to the keyboard")
+            changes.append("⌨️ \(listener.name) (\(listener.signer.notificationTag)) stopped listening to the keyboard")
         }
 
         if screen != old.screen {
@@ -218,11 +227,11 @@ struct PrivacySnapshot: Equatable {
             }
         }
 
-        for app in microphone.apps.subtracting(old.microphone.apps).sorted() {
-            changes.append("🎙️ \(app) started using the microphone")
+        for app in microphone.apps.subtracting(old.microphone.apps).sorted(by: { $0.name < $1.name }) {
+            changes.append("🎙️ \(app.name) (\(app.signer.notificationTag)) started using the microphone")
         }
-        for app in old.microphone.apps.subtracting(microphone.apps).sorted() {
-            changes.append("🎙️ \(app) stopped using the microphone")
+        for app in old.microphone.apps.subtracting(microphone.apps).sorted(by: { $0.name < $1.name }) {
+            changes.append("🎙️ \(app.name) (\(app.signer.notificationTag)) stopped using the microphone")
         }
         if microphone.unattributedUse != old.microphone.unattributedUse {
             changes.append(microphone.unattributedUse
